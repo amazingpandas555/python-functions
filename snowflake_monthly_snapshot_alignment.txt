@@ -1,0 +1,128 @@
+That’s good news, bro. We’ve confirmed that both tables are unique at the member-date level. The issue is not their granularity but their different snapshot dates.
+
+Our previous join failed because we required:
+
+D.POP_DATE = F.POP_DATE
+
+But the two tables have different refresh schedules.
+
+1. Understand the snapshot availability
+
+Suppose this is how the data is available:
+
+Customer Demo	Member Features
+Thursday, 01-Oct-2026	Friday, 02-Oct-2026
+Thursday, 08-Oct-2026	Friday, 09-Oct-2026
+Thursday, 15-Oct-2026	Friday, 16-Oct-2026
+Thursday, 22-Oct-2026	Friday, 23-Oct-2026
+Thursday, 29-Oct-2026	Friday, 30-Oct-2026
+
+For our October monthly population, we can use the latest completed weekly snapshot pair available by October 31.
+
+2. First, verify the refresh pattern
+
+SELECT DISTINCT
+    'CUSTOMER_DEMO' AS SOURCE,
+    POP_DATE,
+    DAYNAME(POP_DATE) AS DAY_OF_WEEK
+FROM CUSTOMER_DEMO
+WHERE POP_DATE BETWEEN '2026-09-01' AND '2026-10-31'
+UNION ALL
+SELECT DISTINCT
+    'MEMBER_FEATURES' AS SOURCE,
+    POP_DATE,
+    DAYNAME(POP_DATE) AS DAY_OF_WEEK
+FROM MEMBER_FEATURES
+WHERE POP_DATE BETWEEN '2026-09-01' AND '2026-10-31'
+ORDER BY POP_DATE, SOURCE;
+
+Purpose: Confirm whether the POP_DATE values consistently differ by one day and whether both tables represent the same weekly reporting cycle.
+
+3. Revised monthly population construction
+
+Assuming Demo’s Thursday snapshot corresponds to Member Features’ Friday snapshot, we will select the latest complete pair for each month.
+
+Customer Demo
+
+29 Oct
+
+Active indicator = 1
+
+Member Features
+
+30 Oct
+
+Bank product count ≥ 1
+
+Join on MEMBER_ID using paired snapshots
+
+October eligible banking population
+
+31-Oct-2026
+
+Monthly reporting date
+
+4. SQL to construct the monthly base population
+
+WITH DEMO_DATES AS (
+    SELECT DISTINCT POP_DATE
+    FROM CUSTOMER_DEMO
+    WHERE POP_DATE BETWEEN '2025-10-01' AND '2026-10-31'
+),
+FEATURE_DATES AS (
+    SELECT DISTINCT POP_DATE
+    FROM MEMBER_FEATURES
+    WHERE POP_DATE BETWEEN '2025-10-01' AND '2026-10-31'
+),
+MONTHLY_DATES AS (
+    SELECT
+        LAST_DAY(F.POP_DATE) AS MONTH_END,
+        D.POP_DATE AS DEMO_DATE,
+        F.POP_DATE AS FEATURE_DATE
+    FROM DEMO_DATES D
+    INNER JOIN FEATURE_DATES F
+        ON F.POP_DATE = DATEADD(DAY, 1, D.POP_DATE)
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY LAST_DAY(F.POP_DATE)
+        ORDER BY F.POP_DATE DESC
+    ) = 1
+)
+SELECT
+    M.MONTH_END AS POP_DATE,
+    D.MEMBER_ID,
+    D.ACTIVE_IND,
+    F.CURRENT_BANKPROD_CNT,
+    M.DEMO_DATE,
+    M.FEATURE_DATE
+FROM MONTHLY_DATES M
+INNER JOIN CUSTOMER_DEMO D
+    ON D.POP_DATE = M.DEMO_DATE
+INNER JOIN MEMBER_FEATURES F
+    ON F.MEMBER_ID = D.MEMBER_ID
+    AND F.POP_DATE = M.FEATURE_DATE
+WHERE D.ACTIVE_IND = 1
+    AND F.CURRENT_BANKPROD_CNT >= 1
+    AND D.MEMBER_ID IS NOT NULL;
+
+Purpose: Construct 13 monthly eligible banking populations without requiring identical source snapshot dates.
+
+5. Expected final output
+
+POP_DATE	MEMBER_ID	ACTIVE_IND	BANKPROD_CNT	DEMO_DATE	FEATURE_DATE
+31-Oct-25	101	1	2	30-Oct-25	31-Oct-25
+31-Oct-25	102	1	3	30-Oct-25	31-Oct-25
+30-Nov-25	101	1	2	27-Nov-25	28-Nov-25
+30-Nov-25	102	1	3	27-Nov-25	28-Nov-25
+31-Oct-26	101	1	4	29-Oct-26	30-Oct-26
+
+I deliberately retained DEMO_DATE and FEATURE_DATE for validation and traceability.
+
+6. Important considerations
+
+* If the one-day difference is consistent: Use the above query.
+* If the difference varies due to holidays or refresh delays: We should select the latest appropriate available snapshots on or before each month-end instead of hardcoding a one-day difference.
+* Monthly reporting date: October 31 is our reporting label, but the actual eligibility information may be a few days older. For this descriptive population analysis, we can use task activity through month-end while acknowledging that difference.
+
+My recommendation is to run Query 1 first and confirm the actual date pattern. Then we can finalize the monthly population construction and join the task flags.
+
+All the queries are read-only. Nothing is created, modified or published in Snowflake.
