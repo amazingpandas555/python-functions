@@ -1,0 +1,381 @@
+Table creation-
+
+CREATE TABLE SANDBOX_DB.SANDBOX_SCHEMA.MEMBER_MONTHLY_POP AS
+
+WITH DEMO_DATES AS (
+
+    SELECT DISTINCT POP_DATE
+    FROM CUSTOMER_DEMO
+    WHERE POP_DATE BETWEEN '2025-10-01' AND '2026-10-31'
+
+),
+
+FEATURE_DATES AS (
+
+    SELECT DISTINCT POP_DATE
+    FROM MEMBER_FEATURES
+    WHERE POP_DATE BETWEEN '2025-10-01' AND '2026-10-31'
+
+),
+
+MONTHLY_DATES AS (
+
+    SELECT
+        LAST_DAY(F.POP_DATE) AS MONTH_END,
+        D.POP_DATE AS DEMO_DATE,
+        F.POP_DATE AS FEATURE_DATE
+
+    FROM DEMO_DATES D
+
+    INNER JOIN FEATURE_DATES F
+        ON F.POP_DATE = DATEADD(DAY, 1, D.POP_DATE)
+
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY LAST_DAY(F.POP_DATE)
+        ORDER BY F.POP_DATE DESC
+    ) = 1
+
+),
+
+BASE_POP AS (
+
+    SELECT
+        M.MONTH_END AS POP_DATE,
+        D.MEMBER_ID,
+        D.ACTIVE_IND,
+        F.CURRENT_BANKPROD_CNT,
+        M.DEMO_DATE,
+        M.FEATURE_DATE
+
+    FROM MONTHLY_DATES M
+
+    INNER JOIN CUSTOMER_DEMO D
+        ON D.POP_DATE = M.DEMO_DATE
+
+    INNER JOIN MEMBER_FEATURES F
+        ON F.MEMBER_ID = D.MEMBER_ID
+        AND F.POP_DATE = M.FEATURE_DATE
+
+    WHERE D.ACTIVE_IND = 1
+        AND F.CURRENT_BANKPROD_CNT >= 1
+        AND D.MEMBER_ID IS NOT NULL
+
+),
+
+MONTHLY_TASKS AS (
+
+    SELECT
+        MEMBER_ID,
+        LAST_DAY(TASK_DATE) AS TASK_MONTH
+
+    FROM TASK_ACTIVITY
+
+    WHERE TASK_DATE >= '2024-11-01'
+        AND TASK_DATE < '2026-11-01'
+        AND MEMBER_ID IS NOT NULL
+
+    GROUP BY 1, 2
+
+),
+
+FINAL_POP AS (
+
+    SELECT
+        B.*,
+        T.TASK_MONTH AS LAST_TASK_MONTH,
+
+        CASE
+            WHEN T.TASK_MONTH >= DATEADD(
+                MONTH, -11, DATE_TRUNC('MONTH', B.POP_DATE)
+            )
+            THEN 1
+            ELSE 0
+        END AS TASK_FLAG_12M
+
+    FROM BASE_POP B
+
+    ASOF JOIN MONTHLY_TASKS T
+        MATCH_CONDITION(B.POP_DATE >= T.TASK_MONTH)
+        ON B.MEMBER_ID = T.MEMBER_ID
+
+)
+
+SELECT
+    *,
+    CASE
+        WHEN TASK_FLAG_12M = 1 THEN 'POP 1'
+        ELSE 'POP 2'
+    END AS TASK_POPULATION
+
+FROM FINAL_POP;
+-----------------------------------------------
+
+
+Tab 1 — Monthly Population
+SELECT
+    POP_DATE,
+    COUNT(*) AS BASE_POP,
+    COUNT_IF(TASK_FLAG_12M = 1) AS POP_1,
+    COUNT_IF(TASK_FLAG_12M = 0) AS POP_2,
+    ROUND(100.0 * POP_1 / BASE_POP, 2) AS POP_1_PCT,
+    ROUND(100.0 * POP_2 / BASE_POP, 2) AS POP_2_PCT
+FROM MEMBER_MONTHLY_POP
+GROUP BY 1
+ORDER BY 1;
+
+
+Excel output:
+Month	Base Pop	Pop 1	Pop 2	Pop 1 %	Pop 2 %
+Oct-25	9.6M	7.39M	2.21M	77%	23%
+...	...	...	...	...	...
+Oct-26	9.8M	8.04M	1.76M	82%	18%
+
+Excel visualization: Select the month and percentage columns and insert a line chart.
+
+
+
+Tab 2 — Overall Annual Migration
+Let's generate the migration matrix directly through SQL rather than manually rearranging the results in Excel.
+SELECT
+    A.TASK_POPULATION AS STARTING_POP,
+
+    COUNT_IF(B.TASK_FLAG_12M = 1) AS POP_1,
+    COUNT_IF(B.TASK_FLAG_12M = 0) AS POP_2,
+    COUNT(*) AS TOTAL_MEMBERS,
+
+    ROUND(100.0 * POP_1 / TOTAL_MEMBERS, 2) AS POP_1_PCT,
+    ROUND(100.0 * POP_2 / TOTAL_MEMBERS, 2) AS POP_2_PCT
+
+FROM MEMBER_MONTHLY_POP A
+
+INNER JOIN MEMBER_MONTHLY_POP B
+    ON A.MEMBER_ID = B.MEMBER_ID
+
+WHERE A.POP_DATE = '2025-10-31'
+  AND B.POP_DATE = '2026-10-31'
+
+GROUP BY 1
+ORDER BY 1;
+
+
+Excel output — illustrative numbers:
+Starting Pop	Pop 1	Pop 2	Total	Pop 1 %	Pop 2 %
+Pop 1	6.8M	400K	7.2M	94.4%	5.6%
+Pop 2	900K	1.2M	2.1M	42.9%	57.1%
+
+Create a migration matrix manually in Excel
+Create this small table below the pasted results by referencing the corresponding percentage cells.
+October 2025 vs October 2026 — illustrativeOct-25 ↓ / Oct-26 →	Pop 1	Pop 2
+Pop 1	94.4%	5.6%
+Pop 2	42.9%	57.1%
+
+
+Use light green for members remaining in the same population and light orange for members changing populations.
+
+This should be the main highlight of your Excel analysis.
+Tab 3 — Monthly Migration
+SELECT
+    A.POP_DATE AS PREVIOUS_MONTH,
+    B.POP_DATE AS CURRENT_MONTH,
+
+    COUNT_IF(A.TASK_FLAG_12M = 1
+         AND B.TASK_FLAG_12M = 1) AS POP_1_TO_1,
+
+    COUNT_IF(A.TASK_FLAG_12M = 1
+         AND B.TASK_FLAG_12M = 0) AS POP_1_TO_2,
+
+    COUNT_IF(A.TASK_FLAG_12M = 0
+         AND B.TASK_FLAG_12M = 1) AS POP_2_TO_1,
+
+    COUNT_IF(A.TASK_FLAG_12M = 0
+         AND B.TASK_FLAG_12M = 0) AS POP_2_TO_2,
+
+    ROUND(100.0 * POP_1_TO_2 /
+        NULLIF(POP_1_TO_1 + POP_1_TO_2, 0), 2)
+        AS INACTIVATION_PCT,
+
+    ROUND(100.0 * POP_2_TO_1 /
+        NULLIF(POP_2_TO_1 + POP_2_TO_2, 0), 2)
+        AS REACTIVATION_PCT
+
+FROM MEMBER_MONTHLY_POP A
+
+INNER JOIN MEMBER_MONTHLY_POP B
+    ON A.MEMBER_ID = B.MEMBER_ID
+    AND B.POP_DATE = LAST_DAY(
+        DATEADD(MONTH, 1, A.POP_DATE)
+    )
+
+GROUP BY 1, 2
+ORDER BY 1, 2;
+
+
+Excel output:
+From	To	1→1	1→2	2→1	2→2	Inactivation %	Reactivation %
+Oct-25	Nov-25	—	—	—	—	—	—
+Nov-25	Dec-25	—	—	—	—	—	—
+...	...	...	...	...	...	...	...
+Sep-26	Oct-26	—	—	—	—	—	—
+
+Excel visualization: Clustered column chart using POP_1_TO_2 and POP_2_TO_1.
+Tab 4 — Migration by Timeframe
+SELECT
+    A.POP_DATE AS PREVIOUS_MONTH,
+    B.POP_DATE AS CURRENT_MONTH,
+    DATEDIFF(MONTH, A.POP_DATE, B.POP_DATE) AS MONTH_GAP,
+
+    COUNT_IF(A.TASK_FLAG_12M = 1
+         AND B.TASK_FLAG_12M = 1) AS POP_1_TO_1,
+
+    COUNT_IF(A.TASK_FLAG_12M = 1
+         AND B.TASK_FLAG_12M = 0) AS POP_1_TO_2,
+
+    COUNT_IF(A.TASK_FLAG_12M = 0
+         AND B.TASK_FLAG_12M = 1) AS POP_2_TO_1,
+
+    COUNT_IF(A.TASK_FLAG_12M = 0
+         AND B.TASK_FLAG_12M = 0) AS POP_2_TO_2,
+
+    ROUND(100.0 * POP_1_TO_2 /
+        NULLIF(POP_1_TO_1 + POP_1_TO_2, 0), 2)
+        AS INACTIVATION_PCT,
+
+    ROUND(100.0 * POP_2_TO_1 /
+        NULLIF(POP_2_TO_1 + POP_2_TO_2, 0), 2)
+        AS REACTIVATION_PCT
+
+FROM MEMBER_MONTHLY_POP A
+
+INNER JOIN MEMBER_MONTHLY_POP B
+    ON A.MEMBER_ID = B.MEMBER_ID
+
+WHERE B.POP_DATE = '2026-10-31'
+  AND A.POP_DATE < B.POP_DATE
+
+GROUP BY 1, 2, 3
+ORDER BY 3;
+
+
+Excel output:
+Month gap	Previous month	Current month	Inactivation %	Reactivation %
+1	Sep-26	Oct-26	—	—
+2	Aug-26	Oct-26	—	—
+3	Jul-26	Oct-26	—	—
+...	...	...	...	...
+12	Oct-25	Oct-26	—	—
+
+Excel visualization: Line chart showing migration percentages across different timeframes.
+
+This will answer whether members return to activity within shorter periods, such as two or three months.
+Tab 5 — Base Population Changes
+WITH START_POP AS (
+
+    SELECT MEMBER_ID
+    FROM MEMBER_MONTHLY_POP
+    WHERE POP_DATE = '2025-10-31'
+
+),
+
+END_POP AS (
+
+    SELECT MEMBER_ID
+    FROM MEMBER_MONTHLY_POP
+    WHERE POP_DATE = '2026-10-31'
+
+)
+
+SELECT
+    CASE
+        WHEN A.MEMBER_ID IS NULL THEN 'Newly Eligible'
+        WHEN B.MEMBER_ID IS NULL THEN 'No Longer Eligible'
+        ELSE 'Eligible at Both Dates'
+    END AS MEMBER_STATUS,
+
+    COUNT(*) AS MEMBER_COUNT
+
+FROM START_POP A
+
+FULL OUTER JOIN END_POP B
+    ON A.MEMBER_ID = B.MEMBER_ID
+
+GROUP BY 1
+ORDER BY 1;
+
+
+Excel output:
+Member status	Member count
+Eligible at both dates	—
+Newly eligible	—
+No longer eligible	—
+
+No chart needed. This table explains the overall change in the eligible base population.
+Tab 6 — Population Stability
+WITH MEMBER_SUMMARY AS (
+
+    SELECT
+        MEMBER_ID,
+        COUNT(DISTINCT POP_DATE) AS MONTHS_PRESENT,
+        SUM(TASK_FLAG_12M) AS ACTIVE_MONTHS
+    FROM MEMBER_MONTHLY_POP
+    GROUP BY 1
+
+)
+
+SELECT
+    CASE
+        WHEN ACTIVE_MONTHS = 13 THEN 'Always Pop 1'
+        WHEN ACTIVE_MONTHS = 0 THEN 'Always Pop 2'
+        ELSE 'Changed Population'
+    END AS POPULATION_STATUS,
+
+    COUNT(*) AS MEMBER_COUNT,
+
+    ROUND(
+        100.0 * COUNT(*) / SUM(COUNT(*)) OVER (),
+        2
+    ) AS MEMBER_PCT
+
+FROM MEMBER_SUMMARY
+
+WHERE MONTHS_PRESENT = 13
+
+GROUP BY 1
+ORDER BY 1;
+
+
+Excel output:
+Population status	Member count	Percentage
+Always Pop 1	—	—
+Always Pop 2	—	—
+Changed population	—	—
+
+This analysis considers only members eligible at all 13 monthly snapshots.
+
+Final Excel structure
+ CDA Phase 2 – Population Analysis
+
+
+01. Monthly Population
+Table + line chart
+
+02. Annual Migration
+Table + migration matrix
+
+03. Monthly Migration
+Table + column chart
+
+04. Migration Timeframes
+Table + line chart
+
+05. Eligibility Changes
+Table only
+
+06. Population Stability
+Table only
+
+
+One Excel formatting note: The SQL percentage columns already return values such as 23.00, not 0.23. Keep them as numbers with a percentage column heading, or use Excel's custom format 0.00"%". Otherwise, standard percentage formatting will display 2300%.
+
+Also, migration percentages are calculated among members eligible at both comparison dates, while population stability uses members present in all 13 snapshots.
+
+I would finish these six tabs first. Keep the formatting minimal, use consistent headings, and add two or three observations below each table after seeing the actual results. This is sufficient for a professional exploratory analysis without overcomplicating it.
