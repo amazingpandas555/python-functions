@@ -1,9 +1,0 @@
-Population Analysis – Approach, Findings & Takeaways
-
-* Approach: Built a monthly-level eligible banking population from [Start Date] to [End Date], including active members with at least one banking product. Using [XX] months of historical task data, classified members into Pop 1 (at least one task in the preceding [XX] months) and Pop 2 (no tasks in the preceding [XX] months).
-* Population Distribution: The overall banking population remained relatively stable, increasing from [XX]M to [XX]M, while the proportion of Pop 2 gradually decreased from [XX]% to [XX]%.
-* Annual Migration: At the member level, [XX]% of Pop 1 remained in Pop 1, whereas [XX]% of Pop 2 transitioned to Pop 1 over the one-year period, indicating that historical task inactivity is not necessarily permanent.
-* Short-Term Migration & Stability: Monthly reactivation rates declined from approximately [XX]% to [XX]%, indicating continued movement even over shorter timeframes. Additionally, [XX]% of continuously eligible members remained in Pop 1, [XX]% remained in Pop 2, and [XX]% changed populations across all monthly snapshots.
-* Key Takeaway & Modeling Implications: Given the significant movement from Pop 2 to Pop 1, excluding the entire task-inactive population may lead to missed prediction opportunities. These findings can help inform population selection, member-level stratified train/test/validation splits, and sampling strategies for the daily, one-day-ahead task prediction model.
-
-Recommendation: Evaluate the subsequent contribution of both populations to the target task categories before finalizing population exclusions and the model development strategy.
